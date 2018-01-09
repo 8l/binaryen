@@ -1,7 +1,23 @@
+/*
+ * Copyright 2015 WebAssembly Community Group participants
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 // Interned String type, 100% interned on creation. Comparisons are always just a pointer comparison
 
-#ifndef __istring_h__
-#define __istring_h__
+#ifndef wasm_istring_h
+#define wasm_istring_h
 
 #include <unordered_set>
 #include <unordered_map>
@@ -12,6 +28,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
+
+#include "support/threads.h"
+#include "support/utilities.h"
 
 namespace cashew {
 
@@ -48,23 +67,40 @@ struct IString {
 
   void set(const char *s, bool reuse=true) {
     typedef std::unordered_set<const char *, CStringHash, CStringEqual> StringSet;
-    static StringSet* strings = new StringSet();
+    // one global store of strings per thread, we must not access this
+    // in parallel
+    thread_local static StringSet strings;
 
-    if (reuse) {
-      auto result = strings->insert(s); // if already present, does nothing
-      str = *(result.first);
-    } else {
-      auto existing = strings->find(s);
-      if (existing == strings->end()) {
-        char *copy = (char*)malloc(strlen(s)+1); // XXX leaked
-        strcpy(copy, s);
-        s = copy;
+    auto existing = strings.find(s);
+
+    if (existing == strings.end()) {
+      // if the string isn't already known, we must use a single global
+      // storage location, guarded by a mutex, so each string is allocated
+      // exactly once
+      static std::mutex mutex;
+      std::unique_lock<std::mutex> lock(mutex);
+      // a single global set contains the actual strings, so we allocate each one
+      // exactly once.
+      static StringSet globalStrings;
+      auto globalExisting = globalStrings.find(s);
+      if (globalExisting == globalStrings.end()) {
+        if (!reuse) {
+          static std::vector<std::unique_ptr<std::string>> allocated;
+          allocated.emplace_back(wasm::make_unique<std::string>(s));
+          s = allocated.back()->c_str(); // we'll never modify it, so this is ok
+        }
+        // insert into global set
+        globalStrings.insert(s);
       } else {
-        s = *existing;
+        s = *globalExisting;
       }
-      strings->insert(s);
-      str = s;
+      // add the string to our thread-local set
+      strings.insert(s);
+    } else {
+      s = *existing;
     }
+
+    str = s;
   }
 
   void set(const IString &s) {
@@ -98,8 +134,8 @@ struct IString {
   const char *c_str() const { return str; }
   bool equals(const char *other) const { return !strcmp(str, other); }
 
-  bool is()     { return str != nullptr; }
-  bool isNull() { return str == nullptr; }
+  bool is() const     { return str != nullptr; }
+  bool isNull() const { return str == nullptr; }
 };
 
 } // namespace cashew
@@ -128,12 +164,14 @@ namespace cashew {
 // IStringSet
 
 class IStringSet : public std::unordered_set<IString> {
+  std::vector<char> data;
 public:
   IStringSet() {}
   IStringSet(const char *init) { // comma-delimited list
-    int size = strlen(init);
-    char *curr = new char[size+1]; // leaked!
-    strcpy(curr, init);
+    int size = strlen(init) + 1;
+    data.resize(size);
+    char *curr = &data[0];
+    strncpy(curr, init, size);
     while (1) {
       char *end = strchr(curr, ' ');
       if (end) *end = 0;
@@ -157,5 +195,4 @@ public:
 
 } // namespace cashew
 
-#endif // __istring_h__
-
+#endif // wasm_istring_h

@@ -1,18 +1,36 @@
+/*
+ * Copyright 2015 WebAssembly Community Group participants
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 //
 // WebAssembly-to-asm.js translator. Uses the Emscripten optimizer
 // infrastructure.
 //
 
+#ifndef wasm_wasm2asm_h
+#define wasm_wasm2asm_h
+
+#include <cmath>
+
+#include "asmjs/shared-constants.h"
 #include "wasm.h"
 #include "emscripten-optimizer/optimizer.h"
 #include "mixed_arena.h"
 #include "asm_v_wasm.h"
-#include "shared-constants.h"
 
 namespace wasm {
-
-extern int debug;
 
 using namespace cashew;
 
@@ -29,7 +47,7 @@ void flattenAppend(Ref ast, Ref extra) {
   else if (ast[0] == DEFUN) index = 3;
   else abort();
   if (extra[0] == BLOCK) {
-    for (int i = 0; i < extra[1]->size(); i++) {
+    for (size_t i = 0; i < extra[1]->size(); i++) {
       ast[index]->push_back(extra[1][i]);
     }
   } else {
@@ -85,7 +103,11 @@ void flattenAppend(Ref ast, Ref extra) {
 
 
 class Wasm2AsmBuilder {
+  MixedArena allocator;
+
 public:
+  Wasm2AsmBuilder(bool debug) : debug(debug), tableSize(-1) {}
+
   Ref processWasm(Module* wasm);
   Ref processFunction(Function* func);
 
@@ -99,7 +121,7 @@ public:
   // @param result Whether the context we are in receives a value,
   //               and its type, or if not, then we can drop our return,
   //               if we have one.
-  Ref processFunctionBody(Expression* curr, IString result);
+  Ref processFunctionBody(Function* func, IString result);
 
   // Get a temp var.
   IString getTemp(WasmType type) {
@@ -151,8 +173,9 @@ public:
   }
 
 private:
+  bool debug;
   // How many temp vars we need
-  std::vector<int> temps; // type => num temps
+  std::vector<size_t> temps; // type => num temps
   // Which are currently free to use
   std::vector<std::vector<IString>> frees; // type => list of free names
 
@@ -166,6 +189,10 @@ private:
   void addImport(Ref ast, Import *import);
   void addTables(Ref ast, Module *wasm);
   void addExports(Ref ast, Module *wasm);
+
+  Wasm2AsmBuilder() = delete;
+  Wasm2AsmBuilder(const Wasm2AsmBuilder &) = delete;
+  Wasm2AsmBuilder &operator=(const Wasm2AsmBuilder &) = delete;
 };
 
 Ref Wasm2AsmBuilder::processWasm(Module* wasm) {
@@ -178,8 +205,8 @@ Ref Wasm2AsmBuilder::processWasm(Module* wasm) {
   asmFunc[3]->push_back(ValueBuilder::makeStatement(ValueBuilder::makeString(USE_ASM)));
   // create heaps, etc
   addBasics(asmFunc[3]);
-  for (auto import : wasm->imports) {
-    addImport(asmFunc[3], import);
+  for (auto& import : wasm->imports) {
+    addImport(asmFunc[3], import.get());
   }
   // figure out the table size
   tableSize = wasm->table.names.size();
@@ -189,8 +216,8 @@ Ref Wasm2AsmBuilder::processWasm(Module* wasm) {
   }
   tableSize = pow2ed;
   // functions
-  for (auto func : wasm->functions) {
-    asmFunc[3]->push_back(processFunction(func));
+  for (auto& func : wasm->functions) {
+    asmFunc[3]->push_back(processFunction(func.get()));
   }
   addTables(asmFunc[3], wasm);
   // memory XXX
@@ -262,13 +289,13 @@ void Wasm2AsmBuilder::addTables(Ref ast, Module *wasm) {
   std::map<std::string, std::vector<IString>> tables; // asm.js tables, sig => contents of table
   for (size_t i = 0; i < wasm->table.names.size(); i++) {
     Name name = wasm->table.names[i];
-    auto func = wasm->functionsMap[name];
+    auto func = wasm->getFunction(name);
     std::string sig = getSig(func);
     auto& table = tables[sig];
     if (table.size() == 0) {
       // fill it with the first of its type seen. we have to fill with something; and for asm2wasm output, the first is the null anyhow
       table.resize(tableSize);
-      for (int j = 0; j < tableSize; j++) {
+      for (size_t j = 0; j < tableSize; j++) {
         table[j] = fromName(name);
       }
     } else {
@@ -293,7 +320,7 @@ void Wasm2AsmBuilder::addTables(Ref ast, Module *wasm) {
 
 void Wasm2AsmBuilder::addExports(Ref ast, Module *wasm) {
   Ref exports = ValueBuilder::makeObject();
-  for (auto export_ : wasm->exports) {
+  for (auto& export_ : wasm->exports) {
     ValueBuilder::appendToObject(exports, fromName(export_->name), ValueBuilder::makeName(fromName(export_->value)));
   }
   ast->push_back(ValueBuilder::makeStatement(ValueBuilder::makeReturn(exports)));
@@ -308,14 +335,14 @@ Ref Wasm2AsmBuilder::processFunction(Function* func) {
   temps.resize(std::max(i32, std::max(f32, f64)) + 1);
   temps[i32] = temps[f32] = temps[f64] = 0;
   // arguments
-  for (auto& param : func->params) {
-    IString name = fromName(param.name);
+  for (Index i = 0; i < func->getNumParams(); i++) {
+    IString name = fromName(func->getLocalName(i));
     ValueBuilder::appendArgumentToFunction(ret, name);
     ret[3]->push_back(
       ValueBuilder::makeStatement(
         ValueBuilder::makeAssign(
           ValueBuilder::makeName(name),
-          makeAsmCoercion(ValueBuilder::makeName(name), wasmToAsmType(param.type))
+          makeAsmCoercion(ValueBuilder::makeName(name), wasmToAsmType(func->getLocalType(i)))
         )
       )
     );
@@ -327,7 +354,7 @@ Ref Wasm2AsmBuilder::processFunction(Function* func) {
   scanFunctionBody(func->body);
   if (isStatement(func->body)) {
     IString result = func->result != none ? getTemp(func->result) : NO_RESULT;
-    flattenAppend(ret, ValueBuilder::makeStatement(processFunctionBody(func->body, result)));
+    flattenAppend(ret, ValueBuilder::makeStatement(processFunctionBody(func, result)));
     if (func->result != none) {
       // do the actual return
       ret[3]->push_back(ValueBuilder::makeStatement(ValueBuilder::makeReturn(makeAsmCoercion(ValueBuilder::makeName(result), wasmToAsmType(func->result)))));
@@ -336,14 +363,14 @@ Ref Wasm2AsmBuilder::processFunction(Function* func) {
   } else {
     // whole thing is an expression, just do a return
     if (func->result != none) {
-      ret[3]->push_back(ValueBuilder::makeStatement(ValueBuilder::makeReturn(makeAsmCoercion(processFunctionBody(func->body, EXPRESSION_RESULT), wasmToAsmType(func->result)))));
+      ret[3]->push_back(ValueBuilder::makeStatement(ValueBuilder::makeReturn(makeAsmCoercion(processFunctionBody(func, EXPRESSION_RESULT), wasmToAsmType(func->result)))));
     } else {
-      flattenAppend(ret, processFunctionBody(func->body, NO_RESULT));
+      flattenAppend(ret, processFunctionBody(func, NO_RESULT));
     }
   }
-  // locals, including new temp locals
-  for (auto& local : func->locals) {
-    ValueBuilder::appendToVar(theVar, fromName(local.name), makeAsmCoercedZero(wasmToAsmType(local.type)));
+  // vars, including new temp vars
+  for (Index i = func->getVarIndexBase(); i < func->getNumLocals(); i++) {
+    ValueBuilder::appendToVar(theVar, fromName(func->getLocalName(i)), makeAsmCoercedZero(wasmToAsmType(func->getLocalType(i))));
   }
   for (auto f : frees[i32]) {
     ValueBuilder::appendToVar(theVar, f, makeAsmCoercedZero(ASM_INT));
@@ -367,32 +394,29 @@ Ref Wasm2AsmBuilder::processFunction(Function* func) {
 }
 
 void Wasm2AsmBuilder::scanFunctionBody(Expression* curr) {
-  struct ExpressionScanner : public WasmWalker {
+  struct ExpressionScanner : public PostWalker<ExpressionScanner> {
     Wasm2AsmBuilder* parent;
 
     ExpressionScanner(Wasm2AsmBuilder* parent) : parent(parent) {}
 
     // Visitors
 
-    void visitBlock(Block *curr) override {
+    void visitBlock(Block *curr) {
       parent->setStatement(curr);
     }
-    void visitIf(If *curr) override {
+    void visitIf(If *curr) {
       parent->setStatement(curr);
     }
-    void visitLoop(Loop *curr) override {
+    void visitLoop(Loop *curr) {
       parent->setStatement(curr);
     }
-    void visitLabel(Label *curr) override {
+    void visitBreak(Break *curr) {
       parent->setStatement(curr);
     }
-    void visitBreak(Break *curr) override {
+    void visitSwitch(Switch *curr) {
       parent->setStatement(curr);
     }
-    void visitSwitch(Switch *curr) override {
-      parent->setStatement(curr);
-    }
-    void visitCall(Call *curr) override {
+    void visitCall(Call *curr) {
       for (auto item : curr->operands) {
         if (parent->isStatement(item)) {
           parent->setStatement(curr);
@@ -400,10 +424,15 @@ void Wasm2AsmBuilder::scanFunctionBody(Expression* curr) {
         }
       }
     }
-    void visitCallImport(CallImport *curr) override {
-      visitCall(curr);
+    void visitCallImport(CallImport *curr) {
+      for (auto item : curr->operands) {
+        if (parent->isStatement(item)) {
+          parent->setStatement(curr);
+          break;
+        }
+      }
     }
-    void visitCallIndirect(CallIndirect *curr) override {
+    void visitCallIndirect(CallIndirect *curr) {
       if (parent->isStatement(curr->target)) {
         parent->setStatement(curr);
         return;
@@ -415,37 +444,40 @@ void Wasm2AsmBuilder::scanFunctionBody(Expression* curr) {
         }
       }
     }
-    void visitSetLocal(SetLocal *curr) override {
+    void visitSetLocal(SetLocal *curr) {
       if (parent->isStatement(curr->value)) {
         parent->setStatement(curr);
       }
     }
-    void visitLoad(Load *curr) override {
+    void visitLoad(Load *curr) {
       if (parent->isStatement(curr->ptr)) {
         parent->setStatement(curr);
       }
     }
-    void visitStore(Store *curr) override {
+    void visitStore(Store *curr) {
       if (parent->isStatement(curr->ptr) || parent->isStatement(curr->value)) {
         parent->setStatement(curr);
       }
     }
-    void visitUnary(Unary *curr) override {
+    void visitUnary(Unary *curr) {
       if (parent->isStatement(curr->value)) {
         parent->setStatement(curr);
       }
     }
-    void visitBinary(Binary *curr) override {
+    void visitBinary(Binary *curr) {
       if (parent->isStatement(curr->left) || parent->isStatement(curr->right)) {
         parent->setStatement(curr);
       }
     }
-    void visitSelect(Select *curr) override {
-      if (parent->isStatement(curr->condition) || parent->isStatement(curr->ifTrue) || parent->isStatement(curr->ifFalse)) {
+    void visitSelect(Select *curr) {
+      if (parent->isStatement(curr->ifTrue) || parent->isStatement(curr->ifFalse) || parent->isStatement(curr->condition)) {
         parent->setStatement(curr);
       }
     }
-    void visitHost(Host *curr) override {
+    void visitReturn(Return *curr) {
+      abort();
+    }
+    void visitHost(Host *curr) {
       for (auto item : curr->operands) {
         if (parent->isStatement(item)) {
           parent->setStatement(curr);
@@ -457,11 +489,13 @@ void Wasm2AsmBuilder::scanFunctionBody(Expression* curr) {
   ExpressionScanner(this).walk(curr);
 }
 
-Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
-  struct ExpressionProcessor : public WasmVisitor<Ref> {
+Ref Wasm2AsmBuilder::processFunctionBody(Function* func, IString result) {
+  struct ExpressionProcessor : public Visitor<ExpressionProcessor, Ref> {
     Wasm2AsmBuilder* parent;
     IString result;
-    ExpressionProcessor(Wasm2AsmBuilder* parent) : parent(parent) {}
+    Function* func;
+    MixedArena allocator;
+    ExpressionProcessor(Wasm2AsmBuilder* parent, Function* func) : parent(parent), func(func) {}
 
     // A scoped temporary variable.
     struct ScopedTemp {
@@ -499,7 +533,7 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
     Ref visit(Expression* curr, IString nextResult) {
       IString old = result;
       result = nextResult;
-      Ref ret = WasmVisitor::visit(curr);
+      Ref ret = Visitor::visit(curr);
       result = old; // keep it consistent for the rest of this frame, which may call visit on multiple children
       return ret;
     }
@@ -562,11 +596,11 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
 
     // Visitors
 
-    Ref visitBlock(Block *curr) override {
+    Ref visitBlock(Block *curr) {
       breakResults[curr->name] = result;
       Ref ret = ValueBuilder::makeBlock();
       size_t size = curr->list.size();
-      int noResults = result == NO_RESULT ? size : size-1;
+      auto noResults = result == NO_RESULT ? size : size-1;
       for (size_t i = 0; i < noResults; i++) {
         flattenAppend(ret, ValueBuilder::makeStatement(visit(curr->list[i], NO_RESULT)));
       }
@@ -578,7 +612,7 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
       }
       return ret;
     }
-    Ref visitIf(If *curr) override {
+    Ref visitIf(If *curr) {
       IString temp;
       Ref condition = visitForExpression(curr->condition, i32, temp);
       Ref ifTrue = ValueBuilder::makeStatement(visitAndAssign(curr->ifTrue, result));
@@ -594,7 +628,7 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
       condition[1]->push_back(ValueBuilder::makeIf(ValueBuilder::makeName(temp), ifTrue, ifFalse));
       return condition;
     }
-    Ref visitLoop(Loop *curr) override {
+    Ref visitLoop(Loop *curr) {
       Name asmLabel = curr->out.is() ? curr->out : curr->in; // label using the outside, normal for breaks. if no outside, then inside
       if (curr->in.is()) continueLabels[curr->in] = asmLabel;
       Ref body = visit(curr->body, result);
@@ -604,15 +638,12 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
       }
       return ret;
     }
-    Ref visitLabel(Label *curr) override {
-      return ValueBuilder::makeLabel(fromName(curr->name), visit(curr->body, result));
-    }
-    Ref visitBreak(Break *curr) override {
+    Ref visitBreak(Break *curr) {
       if (curr->condition) {
         // we need an equivalent to an if here, so use that code
         Break fakeBreak = *curr;
         fakeBreak.condition = nullptr;
-        If fakeIf;
+        If fakeIf(allocator);
         fakeIf.condition = curr->condition;
         fakeIf.ifTrue = &fakeBreak;
         return visit(&fakeIf, result);
@@ -631,33 +662,26 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
       ret[1]->push_back(theBreak);
       return ret;
     }
-    Ref visitSwitch(Switch *curr) override {
-      Ref ret = ValueBuilder::makeLabel(fromName(curr->name), ValueBuilder::makeBlock());
-      Ref value;
-      if (isStatement(curr->value)) {
+    Expression *defaultBody = nullptr; // default must be last in asm.js
+    Ref visitSwitch(Switch *curr) {
+      assert(!curr->value);
+      Ref ret = ValueBuilder::makeBlock();
+      Ref condition;
+      if (isStatement(curr->condition)) {
         ScopedTemp temp(i32, parent);
-        flattenAppend(ret[2], visit(curr->value, temp));
-        value = temp.getAstName();
+        flattenAppend(ret[2], visit(curr->condition, temp));
+        condition = temp.getAstName();
       } else {
-        value = visit(curr->value, EXPRESSION_RESULT);
+        condition = visit(curr->condition, EXPRESSION_RESULT);
       }
-      Ref theSwitch = ValueBuilder::makeSwitch(value);
+      Ref theSwitch = ValueBuilder::makeSwitch(condition);
       ret[2][1]->push_back(theSwitch);
-      for (auto& c : curr->cases) {
-        bool added = false;
-        for (size_t i = 0; i < curr->targets.size(); i++) {
-          if (curr->targets[i] == c.name) {
-            ValueBuilder::appendCaseToSwitch(theSwitch, ValueBuilder::makeNum(i));
-            added = true;
-          }
-        }
-        if (c.name == curr->default_) {
-          ValueBuilder::appendDefaultToSwitch(theSwitch);
-          added = true;
-        }
-        assert(added);
-        ValueBuilder::appendCodeToSwitch(theSwitch, blockify(visit(c.body, NO_RESULT)), false);
+      for (size_t i = 0; i < curr->targets.size(); i++) {
+        ValueBuilder::appendCaseToSwitch(theSwitch, ValueBuilder::makeNum(i));
+        ValueBuilder::appendCodeToSwitch(theSwitch, blockify(ValueBuilder::makeBreak(fromName(curr->targets[i]))), false);
       }
+      ValueBuilder::appendDefaultToSwitch(theSwitch);
+      ValueBuilder::appendCodeToSwitch(theSwitch, blockify(ValueBuilder::makeBreak(fromName(curr->default_))), false);
       return ret;
     }
 
@@ -680,7 +704,7 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
       return ret;
     }
 
-    Ref visitCall(Call *curr) override {
+    Ref visitCall(Call *curr) {
       Ref theCall = ValueBuilder::makeCall(fromName(curr->target));
       if (!isStatement(curr)) {
         // none of our operands is a statement; go right ahead and create a simple expression
@@ -692,10 +716,10 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
       // we must statementize them all
       return makeStatementizedCall(curr->operands, ValueBuilder::makeBlock(), theCall, result, curr->type);
     }
-    Ref visitCallImport(CallImport *curr) override {
-      return visitCall(curr);
+    Ref visitCallImport(CallImport *curr) {
+      abort();
     }
-    Ref visitCallIndirect(CallIndirect *curr) override {
+    Ref visitCallIndirect(CallIndirect *curr)  {
       std::string stable = std::string("FUNCTION_TABLE_") + getSig(curr->fullType);
       IString table = IString(stable.c_str(), false);
       auto makeTableCall = [&](Ref target) {
@@ -719,33 +743,64 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
       Ref theCall = makeTableCall(temp.getAstName());
       return makeStatementizedCall(curr->operands, ret, theCall, result, curr->type);
     }
-    Ref visitGetLocal(GetLocal *curr) override {
-      return ValueBuilder::makeName(fromName(curr->name));
+    Ref visitGetLocal(GetLocal *curr) {
+      return ValueBuilder::makeName(fromName(func->getLocalName(curr->index)));
     }
-    Ref visitSetLocal(SetLocal *curr) override {
+    Ref visitSetLocal(SetLocal *curr) {
       if (!isStatement(curr)) {
-        return ValueBuilder::makeAssign(ValueBuilder::makeName(fromName(curr->name)), visit(curr->value, EXPRESSION_RESULT));
+        return ValueBuilder::makeAssign(ValueBuilder::makeName(fromName(func->getLocalName(curr->index))), visit(curr->value, EXPRESSION_RESULT));
       }
       ScopedTemp temp(curr->type, parent, result); // if result was provided, our child can just assign there. otherwise, allocate a temp for it to assign to.
       Ref ret = blockify(visit(curr->value, temp));
       // the output was assigned to result, so we can just assign it to our target
-      ret[1]->push_back(ValueBuilder::makeStatement(ValueBuilder::makeAssign(ValueBuilder::makeName(fromName(curr->name)), temp.getAstName())));
+      ret[1]->push_back(ValueBuilder::makeStatement(ValueBuilder::makeAssign(ValueBuilder::makeName(fromName(func->getLocalName(curr->index))), temp.getAstName())));
       return ret;
     }
-    Ref visitLoad(Load *curr) override {
+    Ref visitLoad(Load *curr) {
       if (isStatement(curr)) {
         ScopedTemp temp(i32, parent);
-        GetLocal fakeLocal;
-        fakeLocal.name = temp.getName();
+        GetLocal fakeLocal(allocator);
+        fakeLocal.index = func->getLocalIndex(temp.getName());
         Load fakeLoad = *curr;
         fakeLoad.ptr = &fakeLocal;
         Ref ret = blockify(visitAndAssign(curr->ptr, temp));
         flattenAppend(ret, visitAndAssign(&fakeLoad, result));
         return ret;
       }
+      if (curr->align != 0 && curr->align < curr->bytes) {
+        // set the pointer to a local
+        ScopedTemp temp(i32, parent);
+        SetLocal set(allocator);
+        set.index = func->getLocalIndex(temp.getName());
+        set.value = curr->ptr;
+        Ref ptrSet = visit(&set, NO_RESULT);
+        GetLocal get(allocator);
+        get.index = func->getLocalIndex(temp.getName());
+        // fake loads
+        Load load = *curr;
+        load.ptr = &get;
+        load.bytes = 1; // do the worst
+        Ref rest;
+        switch (curr->type) {
+          case i32: {
+            rest = makeAsmCoercion(visit(&load, EXPRESSION_RESULT), ASM_INT);
+            for (size_t i = 1; i < curr->bytes; i++) {
+              load.offset += 1;
+              Ref add = makeAsmCoercion(visit(&load, EXPRESSION_RESULT), ASM_INT);
+              add = ValueBuilder::makeBinary(add, LSHIFT, ValueBuilder::makeNum(8*i));
+              rest = ValueBuilder::makeBinary(rest, OR, add);
+            }
+            break;
+          }
+          default: abort();
+        }
+        return ValueBuilder::makeSeq(ptrSet, rest);
+      }
       // normal load
-      assert(curr->bytes == curr->align); // TODO: unaligned
       Ref ptr = visit(curr->ptr, EXPRESSION_RESULT);
+      if (curr->offset) {
+        ptr = makeAsmCoercion(ValueBuilder::makeBinary(ptr, PLUS, ValueBuilder::makeNum(curr->offset)), ASM_INT);
+      }
       Ref ret;
       switch (curr->type) {
         case i32: {
@@ -763,14 +818,14 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
       }
       return makeAsmCoercion(ret, wasmToAsmType(curr->type));
     }
-    Ref visitStore(Store *curr) override {
+    Ref visitStore(Store *curr) {
       if (isStatement(curr)) {
         ScopedTemp tempPtr(i32, parent);
         ScopedTemp tempValue(curr->type, parent);
-        GetLocal fakeLocalPtr;
-        fakeLocalPtr.name = tempPtr.getName();
-        GetLocal fakeLocalValue;
-        fakeLocalValue.name = tempValue.getName();
+        GetLocal fakeLocalPtr(allocator);
+        fakeLocalPtr.index = func->getLocalIndex(tempPtr.getName());
+        GetLocal fakeLocalValue(allocator);
+        fakeLocalValue.index = func->getLocalIndex(tempValue.getName());
         Store fakeStore = *curr;
         fakeStore.ptr = &fakeLocalPtr;
         fakeStore.value = &fakeLocalValue;
@@ -779,9 +834,67 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
         flattenAppend(ret, visitAndAssign(&fakeStore, result));
         return ret;
       }
+      if (curr->align != 0 && curr->align < curr->bytes) {
+        // set the pointer to a local
+        ScopedTemp temp(i32, parent);
+        SetLocal set(allocator);
+        set.index = func->getLocalIndex(temp.getName());
+        set.value = curr->ptr;
+        Ref ptrSet = visit(&set, NO_RESULT);
+        GetLocal get(allocator);
+        get.index = func->getLocalIndex(temp.getName());
+        // set the value to a local
+        ScopedTemp tempValue(curr->value->type, parent);
+        SetLocal setValue(allocator);
+        setValue.index = func->getLocalIndex(tempValue.getName());
+        setValue.value = curr->value;
+        Ref valueSet = visit(&setValue, NO_RESULT);
+        GetLocal getValue(allocator);
+        getValue.index = func->getLocalIndex(tempValue.getName());
+        // fake stores
+        Store store = *curr;
+        store.ptr = &get;
+        store.bytes = 1; // do the worst
+        Ref rest;
+        switch (curr->type) {
+          case i32: {
+            Const _255(allocator);
+            _255.value = Literal(int32_t(255));
+            _255.type = i32;
+            for (size_t i = 0; i < curr->bytes; i++) {
+              Const shift(allocator);
+              shift.value = Literal(int32_t(8*i));
+              shift.type = i32;
+              Binary shifted(allocator);
+              shifted.op = ShrU;
+              shifted.left = &getValue;
+              shifted.right = &shift;
+              shifted.type = i32;
+              Binary anded(allocator);
+              anded.op = And;
+              anded.left = i > 0 ? static_cast<Expression*>(&shifted) : static_cast<Expression*>(&getValue);
+              anded.right = &_255;
+              anded.type = i32;
+              store.value = &anded;
+              Ref part = visit(&store, NO_RESULT);
+              if (i == 0) {
+                rest = part;
+              } else {
+                rest = ValueBuilder::makeSeq(rest, part);
+              }
+              store.offset += 1;
+            }
+            break;
+          }
+          default: abort();
+        }
+        return ValueBuilder::makeSeq(ValueBuilder::makeSeq(ptrSet, valueSet), rest);
+      }
       // normal store
-      assert(curr->bytes == curr->align); // TODO: unaligned
       Ref ptr = visit(curr->ptr, EXPRESSION_RESULT);
+      if (curr->offset) {
+        ptr = makeAsmCoercion(ValueBuilder::makeBinary(ptr, PLUS, ValueBuilder::makeNum(curr->offset)), ASM_INT);
+      }
       Ref value = visit(curr->value, EXPRESSION_RESULT);
       Ref ret;
       switch (curr->type) {
@@ -800,32 +913,32 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
       }
       return ValueBuilder::makeAssign(ret, value);
     }
-    Ref visitConst(Const *curr) override {
+    Ref visitConst(Const *curr) {
       switch (curr->type) {
-        case i32: return ValueBuilder::makeInt(curr->value.i32);
+        case i32: return ValueBuilder::makeInt(curr->value.geti32());
         case f32: {
           Ref ret = ValueBuilder::makeCall(MATH_FROUND);
-          Const fake;
-          fake.value = double(curr->value.f32);
+          Const fake(allocator);
+          fake.value = Literal(double(curr->value.getf32()));
           fake.type = f64;
           ret[2]->push_back(visitConst(&fake));
           return ret;
         }
         case f64: {
-          double d = curr->value.f64;
-          if (d == 0 && 1/d < 0) { // negative zero
+          double d = curr->value.getf64();
+          if (d == 0 && std::signbit(d)) { // negative zero
             return ValueBuilder::makeUnary(PLUS, ValueBuilder::makeUnary(MINUS, ValueBuilder::makeDouble(0)));
           }
-          return ValueBuilder::makeUnary(PLUS, ValueBuilder::makeDouble(curr->value.f64));
+          return ValueBuilder::makeUnary(PLUS, ValueBuilder::makeDouble(curr->value.getf64()));
         }
         default: abort();
       }
     }
-    Ref visitUnary(Unary *curr) override {
+    Ref visitUnary(Unary *curr) {
       if (isStatement(curr)) {
         ScopedTemp temp(curr->value->type, parent);
-        GetLocal fakeLocal;
-        fakeLocal.name = temp.getName();
+        GetLocal fakeLocal(allocator);
+        fakeLocal.index = func->getLocalIndex(temp.getName());
         Unary fakeUnary = *curr;
         fakeUnary.value = &fakeLocal;
         Ref ret = blockify(visitAndAssign(curr->value, temp));
@@ -854,10 +967,10 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
             case Trunc:         ret = ValueBuilder::makeCall(MATH_TRUNC, value); break;
             case Nearest:       ret = ValueBuilder::makeCall(MATH_NEAREST, value); break;
             case Sqrt:          ret = ValueBuilder::makeCall(MATH_SQRT, value); break;
-            case TruncSFloat32: ret = ValueBuilder::makePrefix(B_NOT, ValueBuilder::makePrefix(B_NOT, value)); break;
+            //case TruncSFloat32: ret = ValueBuilder::makePrefix(B_NOT, ValueBuilder::makePrefix(B_NOT, value)); break;
             case PromoteFloat32:
-            case ConvertSInt32: ret = ValueBuilder::makePrefix(PLUS, ValueBuilder::makeBinary(value, OR, ValueBuilder::makeNum(0))); break;
-            case ConvertUInt32: ret = ValueBuilder::makePrefix(PLUS, ValueBuilder::makeBinary(value, TRSHIFT, ValueBuilder::makeNum(0))); break;
+            //case ConvertSInt32: ret = ValueBuilder::makePrefix(PLUS, ValueBuilder::makeBinary(value, OR, ValueBuilder::makeNum(0))); break;
+            //case ConvertUInt32: ret = ValueBuilder::makePrefix(PLUS, ValueBuilder::makeBinary(value, TRSHIFT, ValueBuilder::makeNum(0))); break;
             case DemoteFloat64: ret = value; break;
             default: std::cerr << curr << '\n'; abort();
           }
@@ -869,14 +982,14 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
         default: abort();
       }
     }
-    Ref visitBinary(Binary *curr) override {
+    Ref visitBinary(Binary *curr) {
       if (isStatement(curr)) {
         ScopedTemp tempLeft(curr->left->type, parent);
-        GetLocal fakeLocalLeft;
-        fakeLocalLeft.name = tempLeft.getName();
+        GetLocal fakeLocalLeft(allocator);
+        fakeLocalLeft.index = func->getLocalIndex(tempLeft.getName());
         ScopedTemp tempRight(curr->right->type, parent);
-        GetLocal fakeLocalRight;
-        fakeLocalRight.name = tempRight.getName();
+        GetLocal fakeLocalRight(allocator);
+        fakeLocalRight.index = func->getLocalIndex(tempRight.getName());
         Binary fakeBinary = *curr;
         fakeBinary.left = &fakeLocalLeft;
         fakeBinary.right = &fakeLocalRight;
@@ -942,34 +1055,34 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
       }
       return makeAsmCoercion(ret, wasmToAsmType(curr->type));
     }
-    Ref visitSelect(Select *curr) override {
+    Ref visitSelect(Select *curr) {
       if (isStatement(curr)) {
-        ScopedTemp tempCondition(i32, parent);
-        GetLocal fakeCondition;
-        fakeCondition.name = tempCondition.getName();
         ScopedTemp tempIfTrue(curr->ifTrue->type, parent);
-        GetLocal fakeLocalIfTrue;
-        fakeLocalIfTrue.name = tempIfTrue.getName();
+        GetLocal fakeLocalIfTrue(allocator);
+        fakeLocalIfTrue.index = func->getLocalIndex(tempIfTrue.getName());
         ScopedTemp tempIfFalse(curr->ifFalse->type, parent);
-        GetLocal fakeLocalIfFalse;
-        fakeLocalIfFalse.name = tempIfFalse.getName();
+        GetLocal fakeLocalIfFalse(allocator);
+        fakeLocalIfFalse.index = func->getLocalIndex(tempIfFalse.getName());
+        ScopedTemp tempCondition(i32, parent);
+        GetLocal fakeCondition(allocator);
+        fakeCondition.index = func->getLocalIndex(tempCondition.getName());
         Select fakeSelect = *curr;
-        fakeSelect.condition = &fakeCondition;
         fakeSelect.ifTrue = &fakeLocalIfTrue;
         fakeSelect.ifFalse = &fakeLocalIfFalse;
-        Ref ret = blockify(visitAndAssign(curr->condition, tempCondition));
-        flattenAppend(ret, visitAndAssign(curr->ifTrue, tempIfTrue));
+        fakeSelect.condition = &fakeCondition;
+        Ref ret = blockify(visitAndAssign(curr->ifTrue, tempIfTrue));
         flattenAppend(ret, visitAndAssign(curr->ifFalse, tempIfFalse));
+        flattenAppend(ret, visitAndAssign(curr->condition, tempCondition));
         flattenAppend(ret, visitAndAssign(&fakeSelect, result));
         return ret;
       }
       // normal select
-      Ref condition = visit(curr->condition, EXPRESSION_RESULT);
       Ref ifTrue = visit(curr->ifTrue, EXPRESSION_RESULT);
       Ref ifFalse = visit(curr->ifFalse, EXPRESSION_RESULT);
-      ScopedTemp tempCondition(i32, parent),
-                 tempIfTrue(curr->type, parent),
-                 tempIfFalse(curr->type, parent);
+      Ref condition = visit(curr->condition, EXPRESSION_RESULT);
+      ScopedTemp tempIfTrue(curr->type, parent),
+          tempIfFalse(curr->type, parent),
+          tempCondition(i32, parent);
       return
         ValueBuilder::makeSeq(
           ValueBuilder::makeAssign(tempCondition.getAstName(), condition),
@@ -982,18 +1095,22 @@ Ref Wasm2AsmBuilder::processFunctionBody(Expression* curr, IString result) {
           )
         );
     }
-    Ref visitHost(Host *curr) override {
+    Ref visitReturn(Return *curr) {
       abort();
     }
-    Ref visitNop(Nop *curr) override {
+    Ref visitHost(Host *curr) {
+      abort();
+    }
+    Ref visitNop(Nop *curr) {
       return ValueBuilder::makeToplevel();
     }
-    Ref visitUnreachable(Unreachable *curr) override {
+    Ref visitUnreachable(Unreachable *curr) {
       return ValueBuilder::makeCall(ABORT_FUNC);
     }
   };
-  return ExpressionProcessor(this).visit(curr, result);
+  return ExpressionProcessor(this, func).visit(func->body, result);
 }
 
 } // namespace wasm
 
+#endif // wasm_wasm2asm_h

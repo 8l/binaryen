@@ -1,18 +1,35 @@
+/*
+ * Copyright 2015 WebAssembly Community Group participants
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 // Pure parsing. Calls methods on a Builder (template argument) to actually construct the AST
 //
 // XXX All parsing methods assume they take ownership of the input string. This lets them reuse
 //     parts of it. You will segfault if the input string cannot be reused and written to.
 
-#ifndef __parser_h__
-#define __parser_h__
+#ifndef wasm_parser_h
+#define wasm_parser_h
 
-#include <vector>
-#include <iostream>
 #include <algorithm>
-
-#include <stdio.h>
+#include <cstdio>
+#include <iostream>
+#include <limits>
+#include <vector>
 
 #include "istring.h"
+#include "support/safe_integer.h"
 
 namespace cashew {
 
@@ -21,9 +38,6 @@ namespace cashew {
 extern IString TOPLEVEL,
                DEFUN,
                BLOCK,
-               STAT,
-               ASSIGN,
-               NAME,
                VAR,
                CONST,
                CONDITIONAL,
@@ -37,7 +51,6 @@ extern IString TOPLEVEL,
                SEQ,
                SUB,
                CALL,
-               NUM,
                LABEL,
                BREAK,
                CONTINUE,
@@ -46,9 +59,14 @@ extern IString TOPLEVEL,
                INF,
                NaN,
                TEMP_RET0,
+               GET_TEMP_RET0,
+               LLVM_CTTZ_I32,
+               UDIVMODDI4,
                UNARY_PREFIX,
                UNARY_POSTFIX,
                MATH_FROUND,
+               INT64,
+               INT64_CONST,
                SIMD_FLOAT32X4,
                SIMD_FLOAT64X2,
                SIMD_INT8X16,
@@ -163,10 +181,6 @@ class Parser {
 
   static bool hasChar(const char* list, char x) { while (*list) if (*list++ == x) return true; return false; }
 
-  static bool is32Bit(double x) {
-    return x == (int)x || x == (unsigned int)x;
-  }
-
   // An atomic fragment of something. Stops at a natural boundary.
   enum FragType {
     KEYWORD = 0,
@@ -221,7 +235,7 @@ class Parser {
           while (1) {
             if (*src >= '0' && *src <= '9') { num *= 16; num += *src - '0'; }
             else if (*src >= 'a' && *src <= 'f') { num *= 16; num += *src - 'a' + 10; }
-            else if (*src >= 'A' && *src <= 'F') { num *= 16; num += *src - 'F' + 10; }
+            else if (*src >= 'A' && *src <= 'F') { num *= 16; num += *src - 'A' + 10; }
             else break;
             src++;
           }
@@ -233,7 +247,10 @@ class Parser {
         // for valid asm.js input, the '.' should be enough, and for uglify
         // in the emscripten optimizer pipeline, we use simple_ast where INT/DOUBLE
         // is quite the same at this point anyhow
-        type = (std::find(start, src, '.') == src && is32Bit(num)) ? INT : DOUBLE;
+        type = (std::find(start, src, '.') == src &&
+                (wasm::isSInteger32(num) || wasm::isUInteger32(num)))
+                   ? INT
+                   : DOUBLE;
         assert(src > start);
       } else if (hasChar(OPERATOR_INITS, *src)) {
         switch (*src) {
@@ -370,6 +387,7 @@ class Parser {
     else if (frag.str == CONTINUE) return parseContinue(src, seps);
     else if (frag.str == SWITCH) return parseSwitch(src, seps);
     else if (frag.str == NEW) return parseNew(src, seps);
+    else if (frag.str == FOR) return parseFor(src, seps);
     dump(frag.str.str, src);
     abort();
     return nullptr;
@@ -476,6 +494,26 @@ class Parser {
     return Builder::makeWhile(condition, body);
   }
 
+  NodeRef parseFor(char*& src, const char* seps) {
+    skipSpace(src);
+    assert(*src == '(');
+    src++;
+    NodeRef init = parseElement(src, ";");
+    skipSpace(src);
+    assert(*src == ';');
+    src++;
+    NodeRef condition = parseElement(src, ";");
+    skipSpace(src);
+    assert(*src == ';');
+    src++;
+    NodeRef inc = parseElement(src, ")");
+    skipSpace(src);
+    assert(*src == ')');
+    src++;
+    NodeRef body = parseMaybeBracketed(src, seps);
+    return Builder::makeFor(init, condition, inc, body);
+  }
+
   NodeRef parseBreak(char*& src, const char* seps) {
     skipSpace(src);
     Frag next(src);
@@ -509,8 +547,8 @@ class Parser {
           if (value.isNumber()) {
             arg = parseFrag(value);
             src += value.size;
-          } else {
-            assert(value.type == OPERATOR);
+          } else if (value.type == OPERATOR) {
+            // negative number
             assert(value.str == MINUS);
             src += value.size;
             skipSpace(src);
@@ -518,6 +556,12 @@ class Parser {
             assert(value2.isNumber());
             arg = Builder::makePrefix(MINUS, parseFrag(value2));
             src += value2.size;
+          } else {
+            // identifier and function call
+            assert(value.type == IDENT);
+            src += value.size;
+            skipSpace(src);
+            arg = parseCall(parseFrag(value), src);
           }
           Builder::appendCaseToSwitch(ret, arg);
           skipSpace(src);
@@ -911,5 +955,4 @@ public:
 
 } // namespace cashew
 
-#endif // __parser_h__
-
+#endif // wasm_parser_h

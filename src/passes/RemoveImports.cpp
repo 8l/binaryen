@@ -1,3 +1,19 @@
+/*
+ * Copyright 2015 WebAssembly Community Group participants
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 //
 // Removeds imports, and replaces them with nops. This is useful
 // for running a module through the reference interpreter, which
@@ -11,33 +27,31 @@
 
 namespace wasm {
 
-struct RemoveImports : public Pass {
-  MixedArena* allocator;
-  std::map<Name, Import*> importsMap;
-
-  void prepare(PassRunner* runner, Module *module) override {
-    allocator = runner->allocator;
-    importsMap = module->importsMap;
-  }
-
-  void visitCallImport(CallImport *curr) override {
-    WasmType type = importsMap[curr->target]->type.result;
+struct RemoveImports : public WalkerPass<PostWalker<RemoveImports>> {
+  void visitCallImport(CallImport *curr) {
+    WasmType type = getModule()->getFunctionType(getModule()->getImport(curr->target)->functionType)->result;
     if (type == none) {
-      replaceCurrent(allocator->alloc<Nop>());
+      replaceCurrent(getModule()->allocator.alloc<Nop>());
     } else {
       Literal nopLiteral;
       nopLiteral.type = type;
-      replaceCurrent(allocator->alloc<Const>()->set(nopLiteral));
+      replaceCurrent(getModule()->allocator.alloc<Const>()->set(nopLiteral));
     }
   }
 
   void visitModule(Module *curr) {
-    curr->importsMap.clear();
-    curr->imports.clear();
+    std::vector<Name> names;
+    for (auto& import : curr->imports) {
+      names.push_back(import->name);
+    }
+    for (auto& name : names) {
+      curr->removeImport(name);
+    }
   }
 };
 
-static RegisterPass<RemoveImports> registerPass("remove-imports", "removes imports and replaces them with nops");
+Pass *createRemoveImportsPass() {
+  return new RemoveImports();
+}
 
 } // namespace wasm
-

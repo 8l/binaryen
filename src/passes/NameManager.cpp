@@ -1,3 +1,19 @@
+/*
+ * Copyright 2015 WebAssembly Community Group participants
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 //
 // NameManager
 //
@@ -21,17 +37,12 @@ void NameManager::visitBlock(Block* curr) {
   names.insert(curr->name);
 }
 void NameManager::visitLoop(Loop* curr) {
-  names.insert(curr->out);
-  names.insert(curr->in);
-}
-void NameManager::visitLabel(Label* curr) {
   names.insert(curr->name);
 }
 void NameManager::visitBreak(Break* curr) {
   names.insert(curr->name);
 }
 void NameManager::visitSwitch(Switch* curr) {
-  names.insert(curr->name);
   names.insert(curr->default_);
   for (auto& target : curr->targets) {
     names.insert(target);
@@ -48,11 +59,11 @@ void NameManager::visitFunctionType(FunctionType* curr) {
 }
 void NameManager::visitFunction(Function* curr) {
   names.insert(curr->name);
-  for (auto& param : curr->params) {
-    names.insert(param.name);
-  }
-  for (auto& local : curr->locals) {
-    names.insert(local.name);
+  for (Index i = 0; i < curr->getNumLocals(); i++) {
+    Name name = curr->getLocalNameOrDefault(i);
+    if (name.is()) {
+      names.insert(name);
+    }
   }
 }
 void NameManager::visitImport(Import* curr) {
@@ -62,7 +73,8 @@ void NameManager::visitExport(Export* curr) {
   names.insert(curr->name);
 }
 
-static RegisterPass<NameManager> registerPass("name-manager", "utility pass to manage names in modules");
+Pass *createNameManagerPass() {
+  return new NameManager();
+}
 
 } // namespace wasm
-

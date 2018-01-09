@@ -1,6 +1,21 @@
+/*
+ * Copyright 2015 WebAssembly Community Group participants
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
-#ifndef __optimizer_h__
-#define __optimizer_h__
+#ifndef wasm_optimizer_h
+#define wasm_optimizer_h
 
 #include "simple_ast.h"
 
@@ -34,12 +49,13 @@ enum AsmType {
   ASM_INT8X16,
   ASM_INT16X8,
   ASM_INT32X4,
+  ASM_INT64, // non-asm.js
   ASM_NONE // number of types
 };
 
 struct AsmData;
 
-AsmType detectType(cashew::Ref node, AsmData *asmData=nullptr, bool inVarDef=false, cashew::IString minifiedFround=cashew::IString());
+AsmType detectType(cashew::Ref node, AsmData *asmData=nullptr, bool inVarDef=false, cashew::IString minifiedFround=cashew::IString(), bool allowI64=false);
 
 struct AsmData {
   struct Local {
@@ -101,10 +117,6 @@ struct AsmData {
   }
 };
 
-bool isInteger(double x);
-bool isInteger32(double x);
-int32_t toInteger32(double x);
-
 extern cashew::IString ASM_FLOAT_ZERO;
 
 extern cashew::IString SIMD_INT8X16_CHECK,
@@ -132,15 +144,9 @@ enum AsmSign {
 
 extern AsmSign detectSign(cashew::Ref node, cashew::IString minifiedFround);
 
-inline cashew::Ref deStat(cashew::Ref node) {
-  if (node[0] == cashew::STAT) return node[1];
-  return node;
-}
-
 cashew::Ref makeAsmCoercedZero(AsmType type);
 cashew::Ref makeAsmCoercion(cashew::Ref node, AsmType type);
 
 cashew::Ref makeSigning(cashew::Ref node, AsmSign sign);
 
-#endif // __optimizer_h__
-
+#endif // wasm_optimizer_h

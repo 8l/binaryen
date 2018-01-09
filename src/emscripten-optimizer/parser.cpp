@@ -1,3 +1,18 @@
+/*
+ * Copyright 2015 WebAssembly Community Group participants
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #include "parser.h"
 
@@ -8,9 +23,6 @@ namespace cashew {
 IString TOPLEVEL("toplevel"),
         DEFUN("defun"),
         BLOCK("block"),
-        STAT("stat"),
-        ASSIGN("assign"),
-        NAME("name"),
         VAR("var"),
         CONST("const"),
         CONDITIONAL("conditional"),
@@ -24,7 +36,6 @@ IString TOPLEVEL("toplevel"),
         SEQ("seq"),
         SUB("sub"),
         CALL("call"),
-        NUM("num"),
         LABEL("label"),
         BREAK("break"),
         CONTINUE("continue"),
@@ -33,9 +44,14 @@ IString TOPLEVEL("toplevel"),
         INF("inf"),
         NaN("nan"),
         TEMP_RET0("tempRet0"),
+        GET_TEMP_RET0("getTempRet0"),
+        LLVM_CTTZ_I32("_llvm_cttz_i32"),
+        UDIVMODDI4("___udivmoddi4"),
         UNARY_PREFIX("unary-prefix"),
         UNARY_POSTFIX("unary-postfix"),
         MATH_FROUND("Math_fround"),
+        INT64("i64"),
+        INT64_CONST("i64_const"),
         SIMD_FLOAT32X4("SIMD_Float32x4"),
         SIMD_FLOAT64X2("SIMD_Float64x2"),
         SIMD_INT8X16("SIMD_Int8x16"),
@@ -103,19 +119,19 @@ static std::vector<std::unordered_map<IString, int>> precedences; // op, type =>
 struct Init {
   Init() {
     // operators, rtl, type
-    operatorClasses.push_back(OperatorClass(".",         false, OperatorClass::Binary));
-    operatorClasses.push_back(OperatorClass("! ~ + -",   true,  OperatorClass::Prefix));
-    operatorClasses.push_back(OperatorClass("* / %",     false, OperatorClass::Binary));
-    operatorClasses.push_back(OperatorClass("+ -",       false, OperatorClass::Binary));
-    operatorClasses.push_back(OperatorClass("<< >> >>>", false, OperatorClass::Binary));
-    operatorClasses.push_back(OperatorClass("< <= > >=", false, OperatorClass::Binary));
-    operatorClasses.push_back(OperatorClass("== !=",     false, OperatorClass::Binary));
-    operatorClasses.push_back(OperatorClass("&",         false, OperatorClass::Binary));
-    operatorClasses.push_back(OperatorClass("^",         false, OperatorClass::Binary));
-    operatorClasses.push_back(OperatorClass("|",         false, OperatorClass::Binary));
-    operatorClasses.push_back(OperatorClass("? :",       true,  OperatorClass::Tertiary));
-    operatorClasses.push_back(OperatorClass("=",         true,  OperatorClass::Binary));
-    operatorClasses.push_back(OperatorClass(",",         true,  OperatorClass::Binary));
+    operatorClasses.emplace_back(".",         false, OperatorClass::Binary);
+    operatorClasses.emplace_back("! ~ + -",   true,  OperatorClass::Prefix);
+    operatorClasses.emplace_back("* / %",     false, OperatorClass::Binary);
+    operatorClasses.emplace_back("+ -",       false, OperatorClass::Binary);
+    operatorClasses.emplace_back("<< >> >>>", false, OperatorClass::Binary);
+    operatorClasses.emplace_back("< <= > >=", false, OperatorClass::Binary);
+    operatorClasses.emplace_back("== !=",     false, OperatorClass::Binary);
+    operatorClasses.emplace_back("&",         false, OperatorClass::Binary);
+    operatorClasses.emplace_back("^",         false, OperatorClass::Binary);
+    operatorClasses.emplace_back("|",         false, OperatorClass::Binary);
+    operatorClasses.emplace_back("? :",       true,  OperatorClass::Tertiary);
+    operatorClasses.emplace_back("=",         true,  OperatorClass::Binary);
+    operatorClasses.emplace_back(",",         true,  OperatorClass::Binary);
 
     precedences.resize(OperatorClass::Tertiary + 1);
 
@@ -141,4 +157,3 @@ bool isIdentInit(char x) { return (x >= 'a' && x <= 'z') || (x >= 'A' && x <= 'Z
 bool isIdentPart(char x) { return isIdentInit(x) || (x >= '0' && x <= '9'); }
 
 } // namespace cashew
-
